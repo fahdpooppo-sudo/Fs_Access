@@ -1,0 +1,112 @@
+name: Build F-Access APK
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "F-Access-Android-Project.zip"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check project archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "F-Access-Android-Project.zip" ]; then
+            echo "::error::F-Access-Android-Project.zip was not found in the repository root."
+            echo "Repository files:"
+            ls -la
+            exit 1
+          fi
+
+      - name: Extract Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extracted-project
+          unzip -q "F-Access-Android-Project.zip" -d extracted-project
+
+          SETTINGS_FILE="$(find extracted-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "::error::Could not find settings.gradle or settings.gradle.kts inside the ZIP."
+            echo "Extracted files:"
+            find extracted-project -maxdepth 5 -type f | head -200
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project found at: $PROJECT_DIR"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace assembleDebug
+          else
+            gradle --no-daemon --stacktrace assembleDebug
+          fi
+
+      - name: Locate APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_PATH="$(find "$PROJECT_DIR" -type f -path "*/build/outputs/apk/*/*.apk" -print -quit)"
+          if [ -z "$APK_PATH" ]; then
+            echo "::error::Build finished but no APK file was found."
+            echo "Build output folders:"
+            find "$PROJECT_DIR" -type d -path "*/build/outputs*" -print
+            exit 1
+          fi
+          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "APK found: $APK_PATH"
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: F-Access-debug
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
